@@ -6,6 +6,7 @@ pipeline {
         SONAR_PROJECT_KEY = 'SSDD_terminal'
         SONAR_PROJECT_NAME = 'SSDD Terminal'
         DOCKER_IMAGE = 'node:18-alpine'
+        SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:5'
     }
     
     stages {
@@ -41,10 +42,9 @@ pipeline {
             steps {
                 echo 'Running SonarQube SAST analysis...'
                 script {
-                    docker.image("${DOCKER_IMAGE}").inside {
+                    docker.image("${SONAR_SCANNER_IMAGE}").inside {
                         withSonarQubeEnv(credentialsId: 'sonar-token') {
                             sh """
-                                npm install -g sonarqube-scanner
                                 sonar-scanner \
                                     -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                                     -Dsonar.projectName='${SONAR_PROJECT_NAME}' \
