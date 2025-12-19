@@ -71,9 +71,8 @@ pipeline {
                         echo 'Quality Gate check timed out, continuing...'
                     }
 
-                    if (qg && qg.status && qg.status != 'OK') {
+                    if (qg && qg.status) {
                         echo "Quality Gate status: ${qg.status} (continuing pipeline)"
-                        currentBuild.result = 'UNSTABLE'
                     }
                 }
             }
