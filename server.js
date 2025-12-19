@@ -33,6 +33,7 @@ app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
+      blockAllMixedContent: [],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
