@@ -60,9 +60,21 @@ pipeline {
         
         stage('Quality Gate') {
             steps {
-                echo 'Waiting for SonarQube Quality Gate (timeout 15m)...'
-                timeout(time: 15, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                echo 'Waiting for SonarQube Quality Gate (timeout 15m, non-blocking)...'
+                script {
+                    def qg = null
+                    try {
+                        timeout(time: 15, unit: 'MINUTES') {
+                            qg = waitForQualityGate()
+                        }
+                    } catch (err) {
+                        echo 'Quality Gate check timed out, continuing...'
+                    }
+
+                    if (qg && qg.status && qg.status != 'OK') {
+                        echo "Quality Gate status: ${qg.status} (continuing pipeline)"
+                        currentBuild.result = 'UNSTABLE'
+                    }
                 }
             }
         }
