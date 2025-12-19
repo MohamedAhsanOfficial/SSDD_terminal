@@ -25,9 +25,6 @@ app.use(helmet.hidePoweredBy());
 // Prevents MIME-type sniffing attacks
 app.use(helmet.noSniff());
 
-// Prevents clickjacking using X-Frame-Options: DENY
-app.use(helmet.frameguard({ action: 'deny' }));
-
 // Prevents referrer leakage
 app.use(helmet.referrerPolicy({ policy: 'no-referrer' }));
 
@@ -43,7 +40,8 @@ app.use(
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
-      frameAncestors: ["'none'"],
+      // Restrict who can frame this app to mitigate clickjacking (CSP supersedes X-Frame-Options)
+      frameAncestors: ["'self'"],
       formAction: ["'self'"],
     },
   })
