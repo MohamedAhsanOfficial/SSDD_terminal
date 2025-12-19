@@ -2,31 +2,95 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
 const path = require('path');
-const crypto = require('crypto');
-const { exec } = require('child_process');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const csrf = require('csurf');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3001;
 
-/* Hardcoded secret */
-const JWT_SECRET = "hardcoded-secret-key";
+/* =========================================================
+   SECURITY HEADERS & HARDENING (OWASP A05: Security Misconfig)
+========================================================= */
 
-/*Insecure middleware */
+// Removes X-Powered-By header to prevent technology disclosure
+app.disable('x-powered-by');
+
+// Helmet enables multiple HTTP security headers
+app.use(helmet());
+
+// Explicitly hides X-Powered-By header
+app.use(helmet.hidePoweredBy());
+
+// Prevents MIME-type sniffing attacks
+app.use(helmet.noSniff());
+
+// Prevents referrer leakage
+app.use(helmet.referrerPolicy({ policy: 'no-referrer' }));
+
+// Content Security Policy (Prevents XSS, data injection)
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      blockAllMixedContent: [],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      // Restrict who can frame this app to mitigate clickjacking (CSP supersedes X-Frame-Options)
+      frameAncestors: ["'self'"],
+      formAction: ["'self'"],
+    },
+  })
+);
+
+// Parses application/x-www-form-urlencoded data
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
 
-/*Missing security headers */
-app.use((req, res, next) => {
-  next();
+// Parses cookies from HTTP requests
+app.use(cookieParser());
+
+/* =========================================================
+   CSRF PROTECTION (OWASP A01: Broken Access Control)
+========================================================= */
+
+// CSRF protection using synchronizer token pattern
+const csrfProtection = csrf({
+  cookie: {
+    httpOnly: true,          // Prevents JS access to CSRF cookie
+    sameSite: 'Strict',      // Prevents cross-site requests
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+  },
 });
 
-/*Insecure static serving */
-app.use(express.static(__dirname + '/public'));
+/* =========================================================
+   FETCH METADATA PROTECTION (Cross-site Request Blocking)
+========================================================= */
 
-/* Insecure database setup */
+// Blocks unsafe cross-site requests using Fetch Metadata headers
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use((req, res, next) => {
+  const site = req.get('Sec-Fetch-Site');
+  if (site && site !== 'same-origin' && site !== 'none') {
+    if (!SAFE_METHODS.has(req.method)) {
+      return res.status(403).send('Blocked cross-site request');
+    }
+  }
+  return next();
+});
+
+/* =========================================================
+   DATABASE SETUP (SQL Injection Mitigation via Prepared Queries)
+========================================================= */
+
 const db = new sqlite3.Database('./users.db');
 
-/* Weak schema */
+// Create users table
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -34,83 +98,101 @@ db.serialize(() => {
     password TEXT
   )`);
 
-  /* Hardcoded credentials */
-  db.run(`INSERT OR IGNORE INTO users VALUES (1, 'admin', 'admin123')`);
+  // Demo users (for academic purposes)
+  db.run(`INSERT OR IGNORE INTO users (username, password) VALUES ('admin', 'password')`);
+  db.run(`INSERT OR IGNORE INTO users (username, password) VALUES ('user', 'pass')`);
 });
 
-/* Reflected XSS */
-app.get('/hello', (req, res) => {
-  res.send("Hello " + req.query.name);
+/* =========================================================
+   ROUTES
+========================================================= */
+
+// Login page protected with CSRF token
+app.get('/', csrfProtection, (req, res) => {
+  const token = req.csrfToken();
+  res.send(
+  `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Login - MyApp</title>
+    <link rel="stylesheet" href="/css/styles.css">
+  </head>
+  <body>
+    <div class="login-container">
+      <div class="logo">MyApp</div>
+      <div class="subtitle">Secure Login Portal</div>
+      <form id="login-form" action="/login" method="POST">
+        <!-- CSRF token prevents cross-site request forgery -->
+        <input type="hidden" name="_csrf" value="${token}">
+        <div class="input-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" required>
+        </div>
+        <div class="input-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required>
+        </div>
+        <button type="submit">Sign In</button>
+      </form>
+      <div class="footer">
+        &copy; 2025 MyApp. All rights reserved.
+      </div>
+    </div>
+  </body>
+  </html>`
+  );
 });
 
-/* Directory traversal */
-app.get('/file', (req, res) => {
-  const filePath = path.join(__dirname, req.query.path);
-  res.sendFile(filePath);
+// Endpoint to fetch CSRF token (used by client-side forms)
+app.get('/csrf-token', csrfProtection, (req, res) => {
+  res.json({ csrfToken: req.csrfToken() });
 });
 
-/* Authentication bypass */
+// Dashboard page
 app.get('/dashboard', (req, res) => {
-  if (req.query.admin === 'true') {
-    res.send("Welcome Admin");
-  } else {
-    res.send("User Dashboard");
-  }
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
 });
 
-/* SQL Injection + Plaintext password */
-app.post('/login', (req, res) => {
+// Login handler with CSRF + SQL Injection protection
+app.post('/login', csrfProtection, (req, res) => {
   const { username, password } = req.body;
 
-  console.log("Login attempt:", username, password); // Logging sensitive data
+  // Parameterized query prevents SQL Injection
+  const query = `SELECT * FROM users WHERE username = ? AND password = ?`;
 
-  const query = `
-    SELECT * FROM users 
-    WHERE username = '${username}' 
-    AND password = '${password}'
-  `;
-
-  db.get(query, (err, row) => {
+  db.get(query, [username, password], (err, row) => {
+    if (err) {
+      return res.status(500).send('Database error');
+    }
     if (row) {
-      res.redirect('/dashboard?admin=true');
+      res.redirect('/dashboard?user=' + encodeURIComponent(row.username));
     } else {
-      res.send("Login failed");
+      res.sendFile(path.join(__dirname, 'public', 'error.html'));
     }
   });
 });
 
-/* Weak cryptography */
-app.get('/hash', (req, res) => {
-  const hash = crypto.createHash('md5').update(req.query.data).digest('hex');
-  res.send(hash);
+/* =========================================================
+   STATIC FILES
+========================================================= */
+
+// Serves static assets (CSS, images)
+app.use(express.static(path.join(__dirname, 'public')));
+
+/* =========================================================
+   ERROR HANDLING
+========================================================= */
+
+// CSRF error handler prevents stack trace leakage
+app.use((err, req, res, next) => {
+  if (err.code === 'EBADCSRFTOKEN') {
+    return res.status(403).send('Invalid CSRF token');
+  }
+  return next(err);
 });
 
-/* Command injection */
-app.get('/ping', (req, res) => {
-  exec("ping -c 1 " + req.query.host, (err, output) => {
-    res.send(output);
-  });
-});
-
-/* Open redirect */
-app.get('/redirect', (req, res) => {
-  res.redirect(req.query.url);
-});
-
-/* Missing rate limiting & validation */
-app.post('/register', (req, res) => {
-  db.run(
-    `INSERT INTO users (username, password) VALUES ('${req.body.username}', '${req.body.password}')`
-  );
-  res.send("User created");
-});
-
-/* Information disclosure */
-app.get('/error', (req, res) => {
-  throw new Error("Internal failure: DB_PASSWORD=admin123");
-});
-
-/* Insecure server config */
 app.listen(port, () => {
-  console.log("Server running on port " + port);
+  console.log(`Server running at http://localhost:${port}`);
 });
