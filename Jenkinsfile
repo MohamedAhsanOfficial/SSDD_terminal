@@ -1,167 +1,198 @@
-pipeline {
-    agent any
-    
-    environment {
-        SONAR_HOST_URL = 'http://18.221.94.30:9000/'
-        SONAR_PROJECT_KEY = 'SSDD_terminal'
-        SONAR_PROJECT_NAME = 'SSDD Terminal'
-        DOCKER_IMAGE = 'node:18-alpine'
-        SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:5'
-    }
-    
-    stages {
-        stage('Checkout') {
-            steps {
-                echo 'Checking out source code...'
-                git branch: 'main',
-                    url: 'https://github.com/MohamedAhsanOfficial/SSDD_terminal.git'
-            }
-        }
-        
-        stage('Pull Docker Image') {
-            steps {
-                echo 'Pulling Docker image...'
-                script {
-                    docker.image("${DOCKER_IMAGE}").pull()
-                }
-            }
-        }
-        
-        stage('Install Dependencies') {
-            steps {
-                echo 'Installing Node.js dependencies...'
-                script {
-                    docker.image("${DOCKER_IMAGE}").inside {
-                        sh 'npm install'
-                    }
-                }
-            }
-        }
-        
-        stage('SAST - SonarQube Analysis') {
-            steps {
-                echo 'Running SonarQube SAST analysis...'
-                script {
-                    docker.image("${SONAR_SCANNER_IMAGE}").inside {
-                        withSonarQubeEnv(credentialsId: 'sonar-token') {
-                            sh """
-                                sonar-scanner \
-                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                    -Dsonar.projectName='${SONAR_PROJECT_NAME}' \
-                                    -Dsonar.sources=. \
-                                    -Dsonar.exclusions=node_modules/**,public/** \
-                                    -Dsonar.host.url=${SONAR_HOST_URL}
-                            """
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Quality Gate') {
-            steps {
-                echo 'Waiting for SonarQube Quality Gate (timeout 15m, non-blocking)...'
-                script {
-                    def qg = null
-                    try {
-                        timeout(time: 15, unit: 'MINUTES') {
-                            qg = waitForQualityGate()
-                        }
-                    } catch (err) {
-                        echo 'Quality Gate check timed out, continuing...'
-                    }
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const bodyParser = require('body-parser');
+const path = require('path');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const csrf = require('csurf');
 
-                    if (qg && qg.status) {
-                        echo "Quality Gate status: ${qg.status} (continuing pipeline)"
-                    }
-                }
-            }
-        }
-        
-        stage('Build Application') {
-            steps {
-                echo 'Building application...'
-                script {
-                    docker.image("${DOCKER_IMAGE}").inside {
-                        sh 'npm install --production'
-                        echo 'Application built successfully'
-                    }
-                }
-            }
-        }
-        
-        stage('Start Application') {
-            steps {
-                echo 'Starting Node.js application for DAST scanning...'
-                script {
-                    // Clean node_modules to avoid architecture conflicts
-                    sh 'rm -rf node_modules package-lock.json'
-                    
-                    // Start the app in Docker background container
-                    sh '''
-                    docker run -d --name ssdd-app -p 3001:3001 \
-                    -w /app -v $(pwd):/app \
-                    ${DOCKER_IMAGE} \
-                    sh -c "npm install && npm start"
-                    
-                    sleep 10
-                    if curl -s http://localhost:3001 > /dev/null; then
-                        echo "✓ Application is running on port 3001"
-                    else
-                        echo "✗ Application failed to start"
-                        docker logs ssdd-app
-                        exit 1
-                    fi
-                    '''
-                }
-            }
-        }
-        
-        stage('DAST - OWASP ZAP Scan') {
-            steps {
-                echo 'Running OWASP ZAP baseline scan on target application...'
-                script {
-                    sshagent(['zap-ssh']) {
-                        sh '''
-                        echo "Running ZAP scan against application on Jenkins..."
-                        ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
-                        "docker run --rm -v \$(pwd):/zap/wrk:rw -t owasp/zap2docker-stable \
-                        zap-baseline.py \
-                        -t http://172.31.16.61:3001/ \
-                        -r zap-report.html \
-                        -w zap-report.md \
-                        -J zap-report.json || true"
-                        
-                        echo "Copying scan results back to Jenkins workspace..."
-                        scp -o StrictHostKeyChecking=accept-new \
-                        ubuntu@18.118.208.4:~/zap-report.* . || echo "No reports to copy"
-                        '''
-                    }
-                }
-                
-                archiveArtifacts artifacts: 'zap-report.*', allowEmptyArchive: true, fingerprint: true
-                
-                echo 'DAST scan completed. Check archived artifacts for detailed results.'
-            }
-        }
+const app = express();
+const port = process.env.PORT || 3001;
 
+/* =========================================================
+   SECURITY HEADERS & HARDENING (OWASP A05: Security Misconfig)
+========================================================= */
+
+// Removes X-Powered-By header to prevent technology disclosure
+app.disable('x-powered-by');
+
+// Helmet enables multiple HTTP security headers
+app.use(helmet());
+
+// Explicitly hides X-Powered-By header
+app.use(helmet.hidePoweredBy());
+
+// Prevents MIME-type sniffing attacks
+app.use(helmet.noSniff());
+
+// Prevents referrer leakage
+app.use(helmet.referrerPolicy({ policy: 'no-referrer' }));
+
+// Content Security Policy (Prevents XSS, data injection)
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      blockAllMixedContent: [],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      // Restrict who can frame this app to mitigate clickjacking (CSP supersedes X-Frame-Options)
+      frameAncestors: ["'self'"],
+      formAction: ["'self'"],
+    },
+  })
+);
+
+// Parses application/x-www-form-urlencoded data
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Parses cookies from HTTP requests
+app.use(cookieParser());
+
+/* =========================================================
+   CSRF PROTECTION (OWASP A01: Broken Access Control)
+========================================================= */
+
+// CSRF protection using synchronizer token pattern
+const csrfProtection = csrf({
+  cookie: {
+    httpOnly: true,          // Prevents JS access to CSRF cookie
+    sameSite: 'Strict',      // Prevents cross-site requests
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+  },
+});
+
+/* =========================================================
+   FETCH METADATA PROTECTION (Cross-site Request Blocking)
+========================================================= */
+
+// Blocks unsafe cross-site requests using Fetch Metadata headers
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use((req, res, next) => {
+  const site = req.get('Sec-Fetch-Site');
+  if (site && site !== 'same-origin' && site !== 'none') {
+    if (!SAFE_METHODS.has(req.method)) {
+      return res.status(403).send('Blocked cross-site request');
     }
-    
-    post {
-        success {
-            echo 'Pipeline completed successfully!'
-            echo 'SAST analysis passed and application built.'
-        }
-        failure {
-            echo 'Pipeline failed!'
-            echo 'Please check the logs for errors.'
-        }
-        always {
-            echo 'Stopping application container...'
-            sh 'docker stop ssdd-app || true'
-            sh 'docker rm ssdd-app || true'
-            echo 'Cleaning up workspace...'
-            cleanWs()
-        }
+  }
+  return next();
+});
+
+/* =========================================================
+   DATABASE SETUP (SQL Injection Mitigation via Prepared Queries)
+========================================================= */
+
+const db = new sqlite3.Database('./users.db');
+
+// Create users table
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT,
+    password TEXT
+  )`);
+
+  // Demo users (for academic purposes)
+  db.run(`INSERT OR IGNORE INTO users (username, password) VALUES ('admin', 'password')`);
+  db.run(`INSERT OR IGNORE INTO users (username, password) VALUES ('user', 'pass')`);
+});
+
+/* =========================================================
+   ROUTES
+========================================================= */
+
+// Login page protected with CSRF token
+app.get('/', csrfProtection, (req, res) => {
+  const token = req.csrfToken();
+  res.send(
+  `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Login - MyApp</title>
+    <link rel="stylesheet" href="/css/styles.css">
+  </head>
+  <body>
+    <div class="login-container">
+      <div class="logo">MyApp</div>
+      <div class="subtitle">Secure Login Portal</div>
+      <form id="login-form" action="/login" method="POST">
+        <!-- CSRF token prevents cross-site request forgery -->
+        <input type="hidden" name="_csrf" value="${token}">
+        <div class="input-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" required>
+        </div>
+        <div class="input-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required>
+        </div>
+        <button type="submit">Sign In</button>
+      </form>
+      <div class="footer">
+        &copy; 2025 MyApp. All rights reserved.
+      </div>
+    </div>
+  </body>
+  </html>`
+  );
+});
+
+// Endpoint to fetch CSRF token (used by client-side forms)
+app.get('/csrf-token', csrfProtection, (req, res) => {
+  res.json({ csrfToken: req.csrfToken() });
+});
+
+// Dashboard page
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+
+// Login handler with CSRF + SQL Injection protection
+app.post('/login', csrfProtection, (req, res) => {
+  const { username, password } = req.body;
+
+  // Parameterized query prevents SQL Injection
+  const query = `SELECT * FROM users WHERE username = ? AND password = ?`;
+
+  db.get(query, [username, password], (err, row) => {
+    if (err) {
+      return res.status(500).send('Database error');
     }
-}
+    if (row) {
+      res.redirect('/dashboard?user=' + encodeURIComponent(row.username));
+    } else {
+      res.sendFile(path.join(__dirname, 'public', 'error.html'));
+    }
+  });
+});
+
+/* =========================================================
+   STATIC FILES
+========================================================= */
+
+// Serves static assets (CSS, images)
+app.use(express.static(path.join(__dirname, 'public')));
+
+/* =========================================================
+   ERROR HANDLING
+========================================================= */
+
+// CSRF error handler prevents stack trace leakage
+app.use((err, req, res, next) => {
+  if (err.code === 'EBADCSRFTOKEN') {
+    return res.status(403).send('Invalid CSRF token');
+  }
+  return next(err);
+});
+
+app.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
+});
