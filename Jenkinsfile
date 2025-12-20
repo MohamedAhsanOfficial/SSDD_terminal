@@ -89,15 +89,54 @@ pipeline {
                 }
             }
         }
-        stage('DAST') {
+        
+        stage('Start Application') {
             steps {
-                sshagent(['zap-ssh']) {
+                echo 'Starting Node.js application for DAST scanning...'
+                script {
+                    // Start the app in background
                     sh '''
-                    ssh -o StrictHostKeyChecking=no ubuntu@34.220.207.21 \
-                    "docker run --rm -t owasp/zap2docker-stable zap-baseline.py \
-                    -t http://54.245.203.229:3001/ || true"
+                    nohup npm start > /tmp/app.log 2>&1 &
+                    sleep 3
+                    if curl -s http://localhost:3001 > /dev/null; then
+                        echo "✓ Application is running on port 3001"
+                    else
+                        echo "✗ Application failed to start"
+                        cat /tmp/app.log
+                        exit 1
+                    fi
                     '''
                 }
+            }
+        }
+        
+        stage('DAST - OWASP ZAP Scan') {
+            steps {
+                echo 'Running OWASP ZAP baseline scan on target application...'
+                script {
+                    sshagent(['zap-ssh']) {
+                        sh '''
+                        ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
+                        "docker run --rm -v \$(pwd):/zap/wrk:rw -t owasp/zap2docker-stable \
+                        zap-baseline.py \
+                        -t http://172.31.16.61:3001/ \
+                        -r zap-report.html \
+                        -w zap-report.md \
+                        -J zap-report.json || true"
+                        '''
+                        
+                        // Copy scan results back to Jenkins workspace
+                        sh '''
+                        scp -o StrictHostKeyChecking=accept-new \
+                        ubuntu@18.118.208.4:~/zap-report.* . || echo "No reports to copy"
+                        '''
+                    }
+                }
+                
+                // Archive the reports
+                archiveArtifacts artifacts: 'zap-report.*', allowEmptyArchive: true, fingerprint: true
+                
+                echo 'DAST scan completed. Check archived artifacts for detailed results.'
             }
         }
 
