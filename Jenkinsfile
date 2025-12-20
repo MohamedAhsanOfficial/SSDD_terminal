@@ -123,15 +123,7 @@ pipeline {
                 script {
                     sshagent(['zap-ssh']) {
                         sh '''
-                        echo "Pulling Docker image on DAST machine..."
-                        ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
-                        "docker pull node:18-alpine"
-                        
-                        echo "Installing dependencies on DAST machine..."
-                        ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
-                        "cd /home/ubuntu && docker run --rm -v \$(pwd):/app -w /app node:18-alpine npm install"
-                        
-                        echo "Running ZAP scan..."
+                        echo "Running ZAP scan against application on Jenkins..."
                         ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
                         "docker run --rm -v \$(pwd):/zap/wrk:rw -t owasp/zap2docker-stable \
                         zap-baseline.py \
@@ -139,9 +131,7 @@ pipeline {
                         -r zap-report.html \
                         -w zap-report.md \
                         -J zap-report.json || true"
-                        '''
                         
-                        sh '''
                         echo "Copying scan results back to Jenkins workspace..."
                         scp -o StrictHostKeyChecking=accept-new \
                         ubuntu@18.118.208.4:~/zap-report.* . || echo "No reports to copy"
