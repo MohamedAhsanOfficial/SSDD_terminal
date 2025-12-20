@@ -94,6 +94,9 @@ pipeline {
             steps {
                 echo 'Starting Node.js application for DAST scanning...'
                 script {
+                    // Clean node_modules to avoid architecture conflicts
+                    sh 'rm -rf node_modules package-lock.json'
+                    
                     // Start the app in Docker background container
                     sh '''
                     docker run -d --name ssdd-app -p 3001:3001 \
@@ -101,7 +104,7 @@ pipeline {
                     ${DOCKER_IMAGE} \
                     sh -c "npm install && npm start"
                     
-                    sleep 5
+                    sleep 8
                     if curl -s http://localhost:3001 > /dev/null; then
                         echo "✓ Application is running on port 3001"
                     else
@@ -119,6 +122,17 @@ pipeline {
                 echo 'Running OWASP ZAP baseline scan on target application...'
                 script {
                     sshagent(['zap-ssh']) {
+                        sh '''
+                        # Pull Docker image on DAST machine
+                        ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
+                        "docker pull node:18-alpine"
+                        
+                        # Install dependencies on DAST machine
+                        ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
+                        "cd /home/ubuntu && docker run --rm -v \$(pwd):/app -w /app node:18-alpine npm install"
+                        '''
+                        
+                        # Run ZAP scan
                         sh '''
                         ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
                         "docker run --rm -v \$(pwd):/zap/wrk:rw -t owasp/zap2docker-stable \
