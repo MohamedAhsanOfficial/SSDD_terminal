@@ -94,15 +94,19 @@ pipeline {
             steps {
                 echo 'Starting Node.js application for DAST scanning...'
                 script {
-                    // Start the app in background
+                    // Start the app in Docker background container
                     sh '''
-                    nohup npm start > /tmp/app.log 2>&1 &
+                    docker run -d --name ssdd-app -p 3001:3001 \
+                    -w /app -v $(pwd):/app \
+                    ${DOCKER_IMAGE} \
+                    npm start
+                    
                     sleep 3
                     if curl -s http://localhost:3001 > /dev/null; then
                         echo "✓ Application is running on port 3001"
                     else
                         echo "✗ Application failed to start"
-                        cat /tmp/app.log
+                        docker logs ssdd-app
                         exit 1
                     fi
                     '''
@@ -152,6 +156,9 @@ pipeline {
             echo 'Please check the logs for errors.'
         }
         always {
+            echo 'Stopping application container...'
+            sh 'docker stop ssdd-app || true'
+            sh 'docker rm ssdd-app || true'
             echo 'Cleaning up workspace...'
             cleanWs()
         }
