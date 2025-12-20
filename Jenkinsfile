@@ -123,17 +123,15 @@ pipeline {
                 script {
                     sshagent(['zap-ssh']) {
                         sh '''
-                        # Pull Docker image on DAST machine
+                        echo "Pulling Docker image on DAST machine..."
                         ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
                         "docker pull node:18-alpine"
                         
-                        # Install dependencies on DAST machine
+                        echo "Installing dependencies on DAST machine..."
                         ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
                         "cd /home/ubuntu && docker run --rm -v \$(pwd):/app -w /app node:18-alpine npm install"
-                        '''
                         
-                        # Run ZAP scan
-                        sh '''
+                        echo "Running ZAP scan..."
                         ssh -o StrictHostKeyChecking=accept-new ubuntu@18.118.208.4 \
                         "docker run --rm -v \$(pwd):/zap/wrk:rw -t owasp/zap2docker-stable \
                         zap-baseline.py \
@@ -143,15 +141,14 @@ pipeline {
                         -J zap-report.json || true"
                         '''
                         
-                        // Copy scan results back to Jenkins workspace
                         sh '''
+                        echo "Copying scan results back to Jenkins workspace..."
                         scp -o StrictHostKeyChecking=accept-new \
                         ubuntu@18.118.208.4:~/zap-report.* . || echo "No reports to copy"
                         '''
                     }
                 }
                 
-                // Archive the reports
                 archiveArtifacts artifacts: 'zap-report.*', allowEmptyArchive: true, fingerprint: true
                 
                 echo 'DAST scan completed. Check archived artifacts for detailed results.'
