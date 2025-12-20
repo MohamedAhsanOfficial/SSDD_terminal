@@ -102,9 +102,9 @@ pipeline {
                     docker run -d --name ssdd-app -p 3001:3001 \
                     -w /app -v $(pwd):/app \
                     ${DOCKER_IMAGE} \
-                    sh -c "npm install && npm start"
+                    bash -c "npm install && npm start"
                     
-                    sleep 8
+                    sleep 10
                     if curl -s http://localhost:3001 > /dev/null; then
                         echo "✓ Application is running on port 3001"
                     else
